@@ -1,54 +1,64 @@
-# OpenCode sandbox image, built on the OpenShell community sandbox base.
+# OpenCode sandbox workload image, on Red Hat UBI9.
 #
 # Consumed by the `openshell/opencode` stage in kpiwko/dotfiles, which pins one
 # digest of this image and ships the matching opencode.json and egress policy.
 # The paths below are a contract with that stage; see README.md.
 #
-# Why a custom image: the published `ghcr.io/anomalyco/opencode` image ships
-# OpenCode 1.x, which silently drops V2 configuration (`providers`), and the
-# OpenShell base ships no OpenCode at all.
+# Why a custom image at all: the published `ghcr.io/anomalyco/opencode` image
+# ships OpenCode 1.x, which silently drops V2 configuration (`providers`), and the
+# OpenShell community base ships no OpenCode at all.
 #
-# The binary is downloaded straight from the release tarball rather than through
-# the official installer: the installer executes the binary to verify it, and Bun
-# aborts under QEMU emulation, so a cross-built image could never be produced that
-# way. Downloading is also what lets us pin the tarball checksum per architecture.
+# Both stages use RHEL content from registry.access.redhat.com, pinned by digest,
+# so the image does not depend on Docker Hub.
 
-# The OTEL plugin is baked in rather than installed at runtime. The sandbox policy
-# is deny-by-default and does not permit registry.npmjs.org, so a `plugins` entry
-# naming an npm package fails with NpmInstallFailedError and telemetry silently
-# vanishes. A build stage gives a pinned, dependency-complete copy that a plain
-# directory entry in opencode.json loads without any network access.
-FROM node:24-slim AS otel-plugin
+# Build stage: only to install the OTEL plugin with its dependency tree.
+FROM registry.access.redhat.com/ubi9/nodejs-24@sha256:0067c15398ece743e462637c8581b1b31027a7a2d3112e610ad700bde3b03f1b AS plugin
+
 ARG OTEL_PLUGIN_VERSION=2.1.0
+
+USER 0
 WORKDIR /plugin
+
+# The plugin is baked in rather than installed at runtime: the sandbox policy is
+# deny-by-default and does not permit registry.npmjs.org, so a `plugins` entry
+# naming an npm package fails to install and telemetry silently vanishes.
 RUN set -eu; \
     npm pack "@devtheops/opencode-plugin-otel@${OTEL_PLUGIN_VERSION}" >/dev/null; \
     mkdir -p /out/otel; \
-    tar -xzf /plugin/devtheops-opencode-plugin-otel-*.tgz -C /out/otel --strip-components=1; \
+    tar -xzf ./*.tgz -C /out/otel --strip-components=1; \
     cd /out/otel; \
     npm install --omit=dev --no-audit --no-fund --ignore-scripts; \
-    test -f /out/otel/package.json
+    test -f /out/otel/dist/index.js
 
-FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:aeef1c63f00e2913ea002ccb3aaf925f338b5c5d70e63576f0d95c16a138044e
+FROM registry.access.redhat.com/ubi9/ubi@sha256:6636b79fba9e5044360366f189333c30b5ce528efd92c40c68b074592b971fcd
 
 ARG TARGETARCH
 ARG OPENCODE_VERSION=2.4.1
 ARG OPENCODE_SHA256_AMD64=9dbef68f231a311b56441c73c7bec01f6d87ebe44523ad14a7ba4716ff5c2031
 ARG OPENCODE_SHA256_ARM64=9eb4567ff0fab90b6dac106f786652a0ec15d65e25ffbcbb106e5ed1cee4f4e2
 
-# Bun (and therefore the OpenCode binary) aborts when executed under QEMU
-# emulation, so the build-time version check can only run on a native platform.
-# The default is off: CI cross-builds under QEMU. `build.sh` turns it on for the
-# architecture it is running on. The tarball checksum below is the real integrity
-# check and applies to every architecture.
-ARG VERIFY_BINARY=0
+# OpenCode is downloaded from the release tarball, not installed with the upstream
+# installer: that installer executes the binary to verify it, and Bun aborts under
+# QEMU emulation, so a cross-built image could never be produced. Downloading also
+# lets us pin a checksum per architecture.
+#
+# CI builds each architecture natively, so the version check runs by default. Set
+# VERIFY_BINARY=0 only when building for a foreign platform.
+ARG VERIFY_BINARY=1
 
-USER root
+USER 0
 
-# curl/tar fetch and unpack the release; keep the apt lists out of the image.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl tar gzip \
- && rm -rf /var/lib/apt/lists/*
+# No package installs: ubi9/ubi already ships curl, tar, gzip, sha256sum, bash and
+# useradd/groupadd. Its dnf repositories are subscription-gated, so installing
+# anything would make the build depend on entitlements. `git` is the only thing
+# missing, and this stage deliberately carries no repositories.
+
+# Same identity as the OpenShell community base image, so the sandbox contract
+# (unprivileged user, home at /sandbox) is unchanged.
+RUN set -eu; \
+    groupadd --gid 998 sandbox; \
+    useradd --uid 998 --gid 998 --home-dir /sandbox --shell /bin/bash --no-create-home sandbox; \
+    install -d -o 998 -g 998 -m 0755 /sandbox
 
 RUN set -eu; \
     case "${TARGETARCH:-$(uname -m)}" in \
@@ -70,16 +80,15 @@ RUN set -eu; \
         esac; \
     fi
 
+# Read-only under /usr, which the filesystem policy allows. opencode.json points
+# its `plugins` entry at this directory; a directory is loaded in place, unlike a
+# package name, which triggers an npm install.
+COPY --from=plugin /out/otel /usr/local/share/opencode/plugins/opencode-plugin-otel
+
 USER sandbox
 WORKDIR /sandbox
 
-# Read-only under /usr, which the filesystem policy already allows. opencode.json
-# points its `plugins` entry at this directory; a directory entry is loaded in
-# place, unlike a package name, which triggers an npm install.
-COPY --from=otel-plugin /out/otel /usr/local/share/opencode/plugins/opencode-plugin-otel
-
-# The base image's ENTRYPOINT is `/bin/bash`, so a plain command would be read as
-# a bash script path (`bash sleep infinity` -> "sleep: No such file"). OpenShell
-# passes the sandbox's main process as ordinary arguments, so clear the entrypoint
-# and let the command run directly.
+# UBI9 ships `/bin/bash` as the default shell but no ENTRYPOINT; clear it anyway so
+# an inherited entrypoint can never turn the wrapper's `-- sleep infinity` into a
+# script path.
 ENTRYPOINT []
