@@ -37,14 +37,10 @@ ARG OPENCODE_VERSION=2.4.1
 ARG OPENCODE_SHA256_AMD64=9dbef68f231a311b56441c73c7bec01f6d87ebe44523ad14a7ba4716ff5c2031
 ARG OPENCODE_SHA256_ARM64=9eb4567ff0fab90b6dac106f786652a0ec15d65e25ffbcbb106e5ed1cee4f4e2
 
-# OpenCode is downloaded from the release tarball, not installed with the upstream
-# installer: that installer executes the binary to verify it, and Bun aborts under
-# QEMU emulation, so a cross-built image could never be produced. Downloading also
-# lets us pin a checksum per architecture.
-#
-# CI builds each architecture natively, so the version check runs by default. Set
-# VERIFY_BINARY=0 only when building for a foreign platform.
-ARG VERIFY_BINARY=1
+# OpenCode comes from the release tarball rather than the upstream installer, so
+# we can pin a checksum per architecture and never execute a foreign-arch binary
+# during the build. The version check below runs unconditionally: CI builds each
+# architecture natively, so it always can.
 
 USER 0
 
@@ -53,8 +49,8 @@ USER 0
 # anything would make the build depend on entitlements. `git` is the only thing
 # missing, and this stage deliberately carries no repositories.
 
-# Same identity as the OpenShell community base image, so the sandbox contract
-# (unprivileged user, home at /sandbox) is unchanged.
+# Unprivileged default identity for native runs. OpenShell runs the workload as
+# its own uid, so only the home path is a contract.
 RUN set -eu; \
     groupadd --gid 998 sandbox; \
     useradd --uid 998 --gid 998 --home-dir /sandbox --shell /bin/bash --no-create-home sandbox; \
@@ -72,13 +68,11 @@ RUN set -eu; \
     tar -xzf "$tarball" -C /tmp package/bin/opencode; \
     install -m 0755 /tmp/package/bin/opencode /usr/local/bin/opencode; \
     rm -rf /tmp/package "$tarball"; \
-    if [ "$VERIFY_BINARY" = "1" ]; then \
-        installed="$(/usr/local/bin/opencode --version)"; \
-        case "$installed" in \
-            *"${OPENCODE_VERSION}"*) : ;; \
-            *) echo "unexpected opencode version: $installed" >&2; exit 1 ;; \
-        esac; \
-    fi
+    installed="$(/usr/local/bin/opencode --version)"; \
+    case "$installed" in \
+        *"${OPENCODE_VERSION}"*) : ;; \
+        *) echo "unexpected opencode version: $installed" >&2; exit 1 ;; \
+    esac
 
 # Read-only under /usr, which the filesystem policy allows. opencode.json points
 # its `plugins` entry at this directory; a directory is loaded in place, unlike a

@@ -66,9 +66,34 @@ check("--home-dir /sandbox" in CONTAINERFILE, "home must be /sandbox")
 check("USER sandbox" in CONTAINERFILE, "image must run as the unprivileged sandbox user")
 check("WORKDIR /sandbox" in CONTAINERFILE, "workdir must match the sandbox home")
 
-# CI builds each architecture natively, so the version check stays on; it can only
-# be disabled for a deliberate foreign-platform build.
-check("ARG VERIFY_BINARY=1" in CONTAINERFILE, "the binary version check must be on by default")
+# Every architecture is built natively, so the binary must prove itself during the
+# build; there is no knob to skip that.
+check("VERIFY_BINARY" not in CONTAINERFILE, "no opt-out from the version check")
+check("installed=\"$(/usr/local/bin/opencode --version)\"" in CONTAINERFILE,
+      "the build must verify the installed opencode version")
+
+# The version is declared twice: in the Containerfile (what gets installed) and in
+# the workflow (what gets tagged). They must not drift.
+def _arg(name: str) -> str | None:
+    for line in CONTAINERFILE.splitlines():
+        if line.startswith(f"ARG {name}="):
+            return line.split("=", 1)[1].strip()
+    return None
+
+
+def _workflow_env(name: str) -> str | None:
+    for line in WORKFLOW.splitlines():
+        if line.strip().startswith(f"{name}:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+container_version = _arg("OPENCODE_VERSION")
+check(container_version is not None, "Containerfile must declare OPENCODE_VERSION")
+check(
+    container_version == _workflow_env("OPENCODE_VERSION"),
+    f"workflow OPENCODE_VERSION ({_workflow_env('OPENCODE_VERSION')}) must match the image ({container_version})",
+)
 
 check("ubuntu-24.04-arm" in WORKFLOW, "CI must build arm64 natively")
 check("redhat-actions/buildah-build" in WORKFLOW, "CI must build with buildah")

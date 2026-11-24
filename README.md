@@ -77,13 +77,16 @@ podman build -t opencode-sandbox:local .
 podman run --rm opencode-sandbox:local opencode --version
 ```
 
-`build.sh` still exists for a local multi-arch build with `podman manifest`, but
-publishing happens in CI: GHCR needs `write:packages`, which a developer `gh`
+There is no multi-arch local script: a foreign-architecture build cannot run the
+`opencode --version` check the Dockerfile insists on, and Bun aborts under
+emulation. Publish through CI, which needs `write:packages` that a developer `gh`
 login does not carry.
 
 ## Checks
 
 `scripts/check-inputs.py` asserts the invariants that are cheap to get wrong and
-expensive to debug at runtime (digests pinned, checksums per architecture, plugin
-path, cleared entrypoint, native CI). CI runs it before building, and the build
-job smoke-tests the resulting image (`opencode --version`, uid 998, plugin file).
+expensive to debug at runtime: digests pinned, checksums per architecture, plugin
+path, cleared entrypoint, an unconditional version check, native CI, and that the
+OpenCode version in the Dockerfile matches the one the workflow tags. CI runs it
+before building, and the build job smoke-tests the resulting image
+(`opencode --version`, uid 998, plugin file).
