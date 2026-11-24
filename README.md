@@ -14,9 +14,10 @@ this image and ships the matching `opencode.json` and egress policy.
 The published `ghcr.io/anomalyco/opencode` image ships OpenCode 1.x, which drops
 the V2 `providers` block with a compatibility warning and then cannot resolve a
 model. The OpenShell community base has no OpenCode at all. This image adds
-OpenCode 2 to UBI9 and keeps the sandbox contract the consumer relies on: an
-unprivileged `sandbox` user (uid/gid 998), a writable `/sandbox` home, and no
-entrypoint.
+OpenCode 2 to UBI9 and keeps the sandbox contract the consumer relies on: a
+`/sandbox` home, an unprivileged default user, and no entrypoint. Note that
+OpenShell runs the workload as its own arbitrary uid (`10001` in a live sandbox),
+not the image's `USER`, so nothing may depend on the image's uid or ownership.
 
 UBI9 is used for both stages, so the image depends on RHEL content only, pinned by
 digest — no Docker Hub, no distribution base image. `opencode --version` is
@@ -52,7 +53,7 @@ them is a breaking change for that stage:
 | --- | --- |
 | `/usr/local/bin/opencode` | Binary, used as the egress policy's `binaries[].path` |
 | `/usr/local/share/opencode/plugins/opencode-plugin-otel` | Plugin directory loaded by `plugins` |
-| `/sandbox` | Home and workdir of uid/gid 998 (`sandbox`) |
+| `/sandbox` | Home and workdir; the image declares `USER sandbox` (uid 998) |
 | No `ENTRYPOINT` | OpenShell passes the main process as arguments; an inherited entrypoint would turn `sleep infinity` into a script path |
 
 `/usr` is read-only in the sandbox policy; nothing here is written at runtime.

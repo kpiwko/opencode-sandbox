@@ -59,10 +59,10 @@ check(f"COPY --from=plugin /out/otel {PLUGIN_DIR}" in CONTAINERFILE, "plugin cop
 # `sleep infinity` into a script path.
 check("\nENTRYPOINT []\n" in CONTAINERFILE, "the entrypoint must be cleared")
 
-# The consumer's policy pins uid-independent paths but the base contract keeps a
-# fixed unprivileged identity and home.
-check("--uid 998" in CONTAINERFILE, "sandbox uid must stay 998")
-check("--home-dir /sandbox" in CONTAINERFILE, "sandbox home must stay /sandbox")
+# The image ships an unprivileged identity for native runs. OpenShell runs the
+# workload as its own uid, so the real contract is only /sandbox as the home.
+check("--uid 998" in CONTAINERFILE, "image must declare an unprivileged uid")
+check("--home-dir /sandbox" in CONTAINERFILE, "home must be /sandbox")
 check("USER sandbox" in CONTAINERFILE, "image must run as the unprivileged sandbox user")
 check("WORKDIR /sandbox" in CONTAINERFILE, "workdir must match the sandbox home")
 
