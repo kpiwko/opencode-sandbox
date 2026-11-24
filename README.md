@@ -1,8 +1,8 @@
 # container image
 
-An OpenCode sandbox workload image for the OpenShell runtime: the NVIDIA
-community sandbox base plus a pinned OpenCode binary and the pinned OpenTelemetry
-plugin, at paths that a deny-by-default sandbox policy allows.
+An OpenCode sandbox workload image for the OpenShell runtime, built on **Red Hat
+UBI9** from `registry.access.redhat.com`: a pinned OpenCode binary plus the pinned
+OpenTelemetry plugin, at paths that a deny-by-default sandbox policy allows.
 
 Published to `ghcr.io/kpiwko/opencode-sandbox` for `linux/amd64` and
 `linux/arm64`. The consumer is the `openshell/opencode` stage in
@@ -14,47 +14,48 @@ this image and ships the matching `opencode.json` and egress policy.
 The published `ghcr.io/anomalyco/opencode` image ships OpenCode 1.x, which drops
 the V2 `providers` block with a compatibility warning and then cannot resolve a
 model. The OpenShell community base has no OpenCode at all. This image adds
-OpenCode 2 to that base and keeps the base's unprivileged `sandbox` user,
-writable `/sandbox` home, and merged-`/usr` layout.
+OpenCode 2 to UBI9 and keeps the sandbox contract the consumer relies on: an
+unprivileged `sandbox` user (uid/gid 998), a writable `/sandbox` home, and no
+entrypoint.
+
+UBI9 is used for both stages, so the image depends on RHEL content only, pinned by
+digest — no Docker Hub, no distribution base image. `opencode --version` is
+verified inside the build, which is possible exactly because every architecture is
+built natively.
 
 ## What is pinned, and why
 
 | Input | Pin | Why |
 | --- | --- | --- |
-| Base image | digest | A moving tag would change the workload under a policy that pins binary paths |
+| Runtime base | `ubi9/ubi` digest | A floating tag would move the workload under a policy that pins binary paths |
+| Plugin stage | `ubi9/nodejs-24` digest | `npm install` for the plugin, at a pinned interpreter |
 | OpenCode | version + per-arch SHA-256 | Downloaded from the release tarball; the checksum is what proves the artifact |
 | OTEL plugin | version | Baked in, because the sandbox policy denies `registry.npmjs.org` |
-| Build stage | `node:24-slim` | Used only to run `npm install` for the plugin |
 
-Two constraints shape how this is built:
+Two constraints shape the build:
 
-- **No binary execution while cross-building.** Bun, and therefore OpenCode,
-  aborts under QEMU emulation, so the upstream installer (which executes the
-  binary to verify it) cannot be used and `--version` cannot run on a
-  cross-built architecture. The tarball checksum covers every architecture; the
-  version check is opt-in via `VERIFY_BINARY=1` for a native build.
 - **The plugin must load without network.** A `plugins` entry naming an npm
   package makes OpenCode run `npm install` at startup. Under a deny-by-default
-  policy that fails and telemetry silently disappears, so the plugin is installed
-  into a build stage and consumed as a directory.
+  policy that fails, and telemetry silently disappears. The plugin is installed in
+  a build stage and consumed as a directory.
+- **No emulation.** OpenCode is a Bun binary and aborts under QEMU, so CI builds
+  each architecture on a native runner (`ubuntu-24.04`, `ubuntu-24.04-arm`) with
+  Podman/Buildah, then assembles one manifest with `podman manifest`. That is also
+  why the upstream installer cannot be used: it executes the binary to verify it.
 
 ## Layout contract
 
 These paths are referenced by the consumer's `opencode.json` and policy. Changing
 them is a breaking change for that stage:
 
-| Path | Meaning |
+| Path / property | Meaning |
 | --- | --- |
 | `/usr/local/bin/opencode` | Binary, used as the egress policy's `binaries[].path` |
 | `/usr/local/share/opencode/plugins/opencode-plugin-otel` | Plugin directory loaded by `plugins` |
-| `/sandbox` | Unprivileged user's home and workdir |
+| `/sandbox` | Home and workdir of uid/gid 998 (`sandbox`) |
+| No `ENTRYPOINT` | OpenShell passes the main process as arguments; an inherited entrypoint would turn `sleep infinity` into a script path |
 
 `/usr` is read-only in the sandbox policy; nothing here is written at runtime.
-
-The base image's `ENTRYPOINT` is `/bin/bash`. This image clears it, because
-OpenShell passes the sandbox's main process as plain arguments — with the
-entrypoint inherited, `sleep infinity` becomes `bash sleep infinity` and bash
-dies trying to run a script named `sleep`.
 
 ## Build and publish
 
@@ -64,20 +65,24 @@ CI publishes on every push to `main`, on a `v*` tag, and on manual dispatch:
 gh workflow run build.yml --repo kpiwko/opencode-sandbox
 ```
 
-The job prints the manifest digest in its summary. Copy that digest into the
-consumer's `create-sandbox.sh` — a floating tag would change the workload under a
+The manifest job prints the digest to pin in its summary. Copy it into the
+consumer's `create-sandbox.sh`; a floating tag would change the workload under a
 policy that pins binary paths.
 
-Local build for inspection (publishing needs `write:packages`, which the CI
-`GITHUB_TOKEN` has and a developer `gh` login does not):
+Local build of the native architecture:
 
 ```sh
-./build.sh                    # both architectures, pushes to GHCR
-PLATFORMS=linux/arm64 ./build.sh
+podman build -t opencode-sandbox:local .
+podman run --rm opencode-sandbox:local opencode --version
 ```
+
+`build.sh` still exists for a local multi-arch build with `podman manifest`, but
+publishing happens in CI: GHCR needs `write:packages`, which a developer `gh`
+login does not carry.
 
 ## Checks
 
 `scripts/check-inputs.py` asserts the invariants that are cheap to get wrong and
-expensive to debug at runtime (checksum pinned per architecture, plugin path
-present, entrypoint cleared, multi-arch CI). CI runs it before building.
+expensive to debug at runtime (digests pinned, checksums per architecture, plugin
+path, cleared entrypoint, native CI). CI runs it before building, and the build
+job smoke-tests the resulting image (`opencode --version`, uid 998, plugin file).
